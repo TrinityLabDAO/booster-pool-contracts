@@ -225,7 +225,7 @@ console.log("### amountIn - ", amountIn);
     function calcDepositAmounts(
         address token,
         uint256 amount
-    ) public returns (uint256 amount0, uint256 amount1){
+    ) public view returns (uint256 amount0, uint256 amount1){
 
         (uint160 sqrtPriceX96, , , , , , ) = pool.slot0();
         uint160 sqrtRatioAX96 = TickMath.getSqrtRatioAtTick(baseLower);
@@ -252,7 +252,6 @@ console.log("###  calc asset1 ", calc_amount1);
         //let x = Number(calc_amount0);
         //let x_deposit = x / (1 + price_ratio/pool_ratio);
         //let y_deposit = (x - x_deposit) / price_ratio;
-//        uint256 priceRatio = calc_amount0 / calc_amount1;
 
         (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
             sqrtPriceX96,
@@ -262,22 +261,18 @@ console.log("###  calc asset1 ", calc_amount1);
         );
 console.log("###  amount0 - ", amount0);
 console.log("###  amount1 - ", amount1);
-//        uint256 poolRatio = amount0 / amount1;
-//console.log("###  priceRatio - ", priceRatio);
-//console.log("###  poolRatio - ", poolRatio);
 
-        //amount0 = calc_amount0 / (1 + priceRatio / poolRatio);
-        //amount1 = (calc_amount0 - amount0) / priceRatio;
-//amount0 = calc_amount0 * poolRatio / (poolRatio + priceRatio);
-//amount0 = calc_amount0 * amount0 * amount1 * calc_amount1 / (amount1 * (calc_amount1 * amount0 + amount1 * calc_amount0));
-amount0 = FullMath.mulDiv(calc_amount0 * amount0,
+//        uint256 priceRatio = calc_amount0 / calc_amount1;
+//        uint256 poolRatio = amount0 / amount1;
+
+
+        amount0 = FullMath.mulDiv(calc_amount0 * amount0,
                             amount1 * calc_amount1,
                             amount1 * (calc_amount1 * amount0 + amount1 * calc_amount0));
 
-
-amount1 = FullMath.mulDiv(calc_amount0 - amount0, calc_amount1, calc_amount0);
-        //FullMath.mulDiv(sqrtRatioAX96, sqrtRatioBX96, FixedPoint96.Q96);
-
+        amount1 = FullMath.mulDiv(calc_amount0 - amount0,
+                                calc_amount1,
+                                calc_amount0);
 console.log("###  amount0 - ", amount0);
 console.log("###  amount1 - ", amount1);
     }
@@ -318,7 +313,11 @@ console.log("###  amount1 - ", amount1);
         }
 console.log("### amountRes", amountRes);
 console.log("###  contract balance after swap amount0 %s   amount1 %s",getBalance0(),getBalance1());
-        (shares, amount0, amount1) = _calcSharesAndAmounts(getBalance0() - start_amount0, getBalance1() - start_amount1, start_amount0, start_amount1);
+        //calculation of the deposit amount after the swap
+        //the deposit amount is the current balance of the contract minus the starting balance of the contract
+        uint256 deposit_amount0 = getBalance0() - start_amount0;
+        uint256 deposit_amount1 = getBalance1() - start_amount1;
+        (shares, amount0, amount1) = _calcSharesAndAmounts(deposit_amount0, deposit_amount1, start_amount0, start_amount1);
         require(shares > 0, "shares to low");
         uint256 refund0 = getBalance0() - start_amount0 - amount0;
         uint256 refund1 = getBalance1() - start_amount1 - amount1;
@@ -369,11 +368,7 @@ console.log("### refund %s, %s ", refund0, refund1);
         require(amount0 >= amount0Min, "amount0Min");
         require(amount1 >= amount1Min, "amount1Min");
 
-    console.log(
-    "deposit amount0 %s   amount1 %s",
-    uint(amount0),
-    uint(amount1)
-    );
+console.log("deposit amount0 %s   amount1 %s",uint(amount0),uint(amount1));
         // Pull in tokens from sender
         if (amount0 > 0) token0.safeTransferFrom(msg.sender, address(this), amount0);
         if (amount1 > 0) token1.safeTransferFrom(msg.sender, address(this), amount1);
@@ -425,7 +420,7 @@ console.log("###  liquidityDesired %s   BPtotalSupply %s   liquidityTotal %s",li
         } else {
             shares = uint256(liquidityDesired) * BPtotalSupply / liquidityTotal;        
         }
-console.log("###  /////shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
+console.log("###  shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
     }
 
     function calcSharesAndAmounts(uint256 amount0Desired, uint256 amount1Desired) 
@@ -526,7 +521,6 @@ console.log("###  /////shares %s, amount0 %s, amount1 %s", shares, amount0, amou
     ) internal {
         _burnAndCollect(baseLower, baseUpper, 0);
         // swap and mint liquidity (fees) to position
-console.log("###  contract balance after collect fees amount0 %s   amount1 %s",getBalance0(),getBalance1());
         _swapAndMint(swapAmount, sqrtPriceLimitX96, baseLower, baseUpper);
     }
 
@@ -584,10 +578,6 @@ console.log("###  contract balance after collect fees amount0 %s   amount1 %s",g
 
         // Place base order on Uniswap
         uint128 liquidity = _liquidityForAmounts(_baseLower, _baseUpper, balance0, balance1);
-console.log(
-"liquidity",
-liquidity
-);
         if (liquidity > 0) {
             pool.mint(address(this), _baseLower, _baseUpper, liquidity, "");
         }
