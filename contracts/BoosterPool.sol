@@ -31,21 +31,29 @@ import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.so
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import "@uniswap/v3-periphery/contracts/libraries/PositionKey.sol";
 
-import "github.com/Uniswap/v3-core/blob/0.8/contracts/libraries/TickMath.sol";
+//import "http://github.com/Uniswap/v3-core/blob/0.8/contracts/libraries/TickMath.sol";
+import "./libraries/TickMath.sol";
 import "./libraries/LiquidityAmounts.sol";
 
 
+import "hardhat/console.sol";
 /**
  * @title   Booster pool
  * @notice  A pool that provides liquidity on Uniswap V3.
  */
-contract Booster is
+contract BoosterPool is
     IUniswapV3MintCallback,
     IUniswapV3SwapCallback,
     ERC20,
     ReentrancyGuard
 {
     using SafeERC20 for IERC20;
+
+    event DepositOneAsset(
+        uint128 liquidity,
+        uint256 balance0,
+        uint256 balance1
+    );
 
     event Deposit(
         address indexed sender,
@@ -87,6 +95,13 @@ contract Booster is
     event Governance(address oldGovernance, address newGovernance);
     event Strategy(address oldStrategy, address newStrategy);
     event Deactivate();
+
+    struct AMOUNTS{
+        uint256 SB_amount0;
+        uint256 SB_amount1;
+        int256 SWAP_amount0;
+        int256 SWAP_amount1;
+    }
 
     IUniswapV3Pool public immutable pool;
     IERC20 public immutable token0;
@@ -161,6 +176,164 @@ contract Booster is
         baseUpper = _tickUpper; 
     }
 
+    function buyExact(
+        address token,
+        uint256 amountOut,
+        uint160 sqrtPriceLimitX96
+    ) private returns (uint256 amountIn){
+        bool zeroForOne = token == address(token0);
+console.log("### buy zeroForOne - ", zeroForOne);
+console.log("### amountOut - ", amountOut);
+        (int256 amount0Delta, int256 amount1Delta) = pool.swap(
+            address(this),
+            zeroForOne,
+            -int256(amountOut),
+            sqrtPriceLimitX96 == 0
+            ? (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
+            : sqrtPriceLimitX96,
+            ""
+        );
+        uint256 amountOutReceived;
+        (amountIn, amountOutReceived) = zeroForOne
+        ? (uint256(amount0Delta), uint256(-amount1Delta))
+        : (uint256(amount1Delta), uint256(-amount0Delta));
+        // it's technically possible to not receive the full output amount,
+        // so if no price limit has been specified, require this possibility away
+        if (sqrtPriceLimitX96 == 0) require(amountOutReceived == amountOut);
+    }
+
+    function sellExact(
+        address token,
+        uint256 amountIn,
+        uint160 sqrtPriceLimitX96
+    ) private returns (uint256 amountOut){
+        bool zeroForOne = token == address(token0);
+console.log("### sell zeroForOne - ", zeroForOne);
+console.log("### amountIn - ", amountIn);
+        (int256 amount0, int256 amount1) = pool.swap(
+            address(this),
+            zeroForOne,
+            int256(amountIn),
+            sqrtPriceLimitX96 == 0
+            ? (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
+            : sqrtPriceLimitX96,
+            ""
+        );
+        return uint256(-(zeroForOne ? amount1 : amount0));
+    }
+
+    function calcDepositAmounts(
+        address token,
+        uint256 amount
+    ) public returns (uint256 amount0, uint256 amount1){
+
+        (uint160 sqrtPriceX96, , , , , , ) = pool.slot0();
+        uint160 sqrtRatioAX96 = TickMath.getSqrtRatioAtTick(baseLower);
+        uint160 sqrtRatioBX96 = TickMath.getSqrtRatioAtTick(baseUpper);
+        uint256 calc_amount0;
+        uint256 calc_amount1;
+console.log("### sqrtPriceX96", sqrtPriceX96);
+        if(address(token0) == token){
+            calc_amount0 = amount;
+            calc_amount1 = FullMath.mulDiv(amount, uint256(sqrtPriceX96) * uint256(sqrtPriceX96), 1 << 192);
+        }else{
+            calc_amount0 = FullMath.mulDiv(amount, 1 << 192, uint256(sqrtPriceX96) * uint256(sqrtPriceX96));
+            calc_amount1 = amount;
+        }
+
+console.log("###  calc asset0 ", calc_amount0);
+console.log("###  calc asset1 ", calc_amount1);
+
+        require(calc_amount0 > 0 , "LA 0");
+        require(calc_amount1 > 0 , "LA 1");
+
+        //let price_ratio = Number(calc_amount0)/Number(usdc_amount);
+        //let pool_ratio = res[0]/res[1];
+        //let x = Number(calc_amount0);
+        //let x_deposit = x / (1 + price_ratio/pool_ratio);
+        //let y_deposit = (x - x_deposit) / price_ratio;
+//        uint256 priceRatio = calc_amount0 / calc_amount1;
+
+        (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
+            sqrtPriceX96,
+            sqrtRatioAX96,
+            sqrtRatioBX96,
+            1e18
+        );
+console.log("###  amount0 - ", amount0);
+console.log("###  amount1 - ", amount1);
+//        uint256 poolRatio = amount0 / amount1;
+//console.log("###  priceRatio - ", priceRatio);
+//console.log("###  poolRatio - ", poolRatio);
+
+        //amount0 = calc_amount0 / (1 + priceRatio / poolRatio);
+        //amount1 = (calc_amount0 - amount0) / priceRatio;
+//amount0 = calc_amount0 * poolRatio / (poolRatio + priceRatio);
+//amount0 = calc_amount0 * amount0 * amount1 * calc_amount1 / (amount1 * (calc_amount1 * amount0 + amount1 * calc_amount0));
+amount0 = FullMath.mulDiv(calc_amount0 * amount0,
+                            amount1 * calc_amount1,
+                            amount1 * (calc_amount1 * amount0 + amount1 * calc_amount0));
+
+
+amount1 = FullMath.mulDiv(calc_amount0 - amount0, calc_amount1, calc_amount0);
+        //FullMath.mulDiv(sqrtRatioAX96, sqrtRatioBX96, FixedPoint96.Q96);
+
+console.log("###  amount0 - ", amount0);
+console.log("###  amount1 - ", amount1);
+    }
+
+
+    function depositOneAsset(
+        address token,
+        uint256 amount,
+        address to
+    ) external nonReentrant returns (uint256 shares, uint256 amount0, uint256 amount1){
+        require(!isDeactivated, "deactivated"); 
+        require(amount > 0 , "amount");
+        require(token != address(0) && token != address(this), "token");
+        require((address(token0) == token) || (address(token1) == token), "incorrect token");
+
+        // Poke positions so vault's current holdings are up-to-date
+        _poke(baseLower, baseUpper);
+
+        (amount0, amount1) = calcDepositAmounts(token, amount);
+
+        uint256 start_amount0 = getBalance0();
+        uint256 start_amount1 = getBalance1();
+
+        //Transfer
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+
+        uint256 amountRes;
+        if(address(token0) == token){
+            if(amount0 < amount1)
+                amountRes = sellExact(token, amount - amount0, 0);
+            else
+                amountRes = buyExact(token, amount1, 0);
+        }else{
+            if(amount0 < amount1)
+                amountRes = buyExact(token, amount0, 0);
+            else
+                amountRes = sellExact(token, amount - amount1, 0);
+        }
+console.log("### amountRes", amountRes);
+console.log("###  contract balance after swap amount0 %s   amount1 %s",getBalance0(),getBalance1());
+        (shares, amount0, amount1) = _calcSharesAndAmounts(getBalance0() - start_amount0, getBalance1() - start_amount1, start_amount0, start_amount1);
+        require(shares > 0, "shares to low");
+        uint256 refund0 = getBalance0() - start_amount0 - amount0;
+        uint256 refund1 = getBalance1() - start_amount1 - amount1;
+
+console.log("### refund %s, %s ", refund0, refund1);
+        if(refund0 > 0)
+            token0.safeTransfer(msg.sender, refund0);
+        if(refund1 > 0)
+            token1.safeTransfer(msg.sender, refund1);
+        // Mint shares to recipient
+        _mint(to, shares);
+        emit Deposit(msg.sender, to, shares, amount0, amount1);
+        _reinvest(0, 0);
+    }
+
     /**
      * @notice Deposits tokens in proportion to the vault's current holdings.
      * @dev These tokens sit in the vault and are not used for liquidity on
@@ -182,15 +355,7 @@ contract Booster is
         uint256 amount0Min,
         uint256 amount1Min,
         address to
-    )
-        external
-        nonReentrant
-        returns (
-            uint256 shares,
-            uint256 amount0,
-            uint256 amount1
-        )
-    {
+    ) external nonReentrant returns (uint256 shares, uint256 amount0, uint256 amount1){
         require(!isDeactivated, "deactivated"); 
         require(amount0Desired > 0 || amount1Desired > 0, "amount0Desired or amount1Desired");
         require(to != address(0) && to != address(this), "to");
@@ -199,11 +364,16 @@ contract Booster is
         _poke(baseLower, baseUpper);
 
         // Calculate amounts proportional to vault's holdings
-        (shares, amount0, amount1) = _calcSharesAndAmounts(amount0Desired, amount1Desired);
+        (shares, amount0, amount1) = _calcSharesAndAmounts(amount0Desired, amount1Desired, getBalance0(), getBalance1());
         require(shares > 0, "shares");
         require(amount0 >= amount0Min, "amount0Min");
         require(amount1 >= amount1Min, "amount1Min");
 
+    console.log(
+    "deposit amount0 %s   amount1 %s",
+    uint(amount0),
+    uint(amount1)
+    );
         // Pull in tokens from sender
         if (amount0 > 0) token0.safeTransferFrom(msg.sender, address(this), amount0);
         if (amount1 > 0) token1.safeTransferFrom(msg.sender, address(this), amount1);
@@ -227,7 +397,7 @@ contract Booster is
     /// @dev Calculates the largest possible `amount0` and `amount1` such that
     /// they're in the same proportion as total amounts, but not greater than
     /// `amount0Desired` and `amount1Desired` respectively.
-    function _calcSharesAndAmounts(uint256 amount0Desired, uint256 amount1Desired)
+    function _calcSharesAndAmounts(uint256 amount0Desired, uint256 amount1Desired, uint256 contractBalance0, uint256 contractBalance1)
         internal
         returns (
             uint256 shares,
@@ -238,9 +408,9 @@ contract Booster is
         uint128 liquidityDesired = _liquidityForAmounts(baseLower, baseUpper, amount0Desired, amount1Desired);
         uint256 BPtotalSupply = totalSupply();
 
-        uint128 liquidityTotal = _getTotalLiquidity();
+        uint128 liquidityTotal = _getTotalLiquidity(contractBalance0, contractBalance1);
         //uint128 liquidityTotal = _liquidityForAmounts(baseLower, baseUpper, total0, total1);
-
+console.log("###  liquidityDesired %s   BPtotalSupply %s   liquidityTotal %s",liquidityDesired,BPtotalSupply,liquidityTotal);
         emit Total(liquidityTotal, liquidityDesired);
 
         // If total supply > 0, vault can't be empty
@@ -255,6 +425,7 @@ contract Booster is
         } else {
             shares = uint256(liquidityDesired) * BPtotalSupply / liquidityTotal;        
         }
+console.log("###  /////shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
     }
 
     function calcSharesAndAmounts(uint256 amount0Desired, uint256 amount1Desired) 
@@ -266,7 +437,7 @@ contract Booster is
         )
     {
         _poke(baseLower, baseUpper);
-        (shares, amount0, amount1) = _calcSharesAndAmounts(amount0Desired, amount1Desired);
+        (shares, amount0, amount1) = _calcSharesAndAmounts(amount0Desired, amount1Desired, getBalance0(), getBalance1());
     }
 
     /**
@@ -355,6 +526,7 @@ contract Booster is
     ) internal {
         _burnAndCollect(baseLower, baseUpper, 0);
         // swap and mint liquidity (fees) to position
+console.log("###  contract balance after collect fees amount0 %s   amount1 %s",getBalance0(),getBalance1());
         _swapAndMint(swapAmount, sqrtPriceLimitX96, baseLower, baseUpper);
     }
 
@@ -412,6 +584,10 @@ contract Booster is
 
         // Place base order on Uniswap
         uint128 liquidity = _liquidityForAmounts(_baseLower, _baseUpper, balance0, balance1);
+console.log(
+"liquidity",
+liquidity
+);
         if (liquidity > 0) {
             pool.mint(address(this), _baseLower, _baseUpper, liquidity, "");
         }
@@ -483,14 +659,14 @@ contract Booster is
     * @notice calculates the liquidity value in the Uniswap V3 pool, taking into account the accrued fee minus the protocol commission
     * @return liquidity Total liquidity in pool and contract
     */
-    function _getTotalLiquidity() internal view returns (uint128 liquidity) {
+    function _getTotalLiquidity(uint256 contractBalance0, uint256 contractBalance1) internal view returns (uint128 liquidity) {
 
         (uint128 liquidityInPosition, , , uint128 tokensOwed0, uint128 tokensOwed1) =
             _position(baseLower, baseUpper);
 
         uint256 oneMinusFee = uint256(1e6) - (protocolFeeA + protocolFeeB);
-        uint256 amount0 = getBalance0() + (uint256(tokensOwed0) * oneMinusFee / 1e6);
-        uint256 amount1 = getBalance1() + (uint256(tokensOwed1) * oneMinusFee / 1e6);
+        uint256 amount0 = contractBalance0 + (uint256(tokensOwed0) * oneMinusFee / 1e6);
+        uint256 amount1 = contractBalance1 + (uint256(tokensOwed1) * oneMinusFee / 1e6);
 
         //liquidity in position add liquidity from fees and contract balance
         liquidity = liquidityInPosition + _liquidityForAmounts(baseLower, baseUpper, amount0, amount1);
@@ -585,7 +761,7 @@ contract Booster is
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
-    ) internal view returns (uint256, uint256) {
+    ) public view returns (uint256, uint256) {
         (uint160 sqrtRatioX96, , , , , , ) = pool.slot0();
         return
             LiquidityAmounts.getAmountsForLiquidity(
@@ -602,7 +778,7 @@ contract Booster is
         int24 tickUpper,
         uint256 amount0,
         uint256 amount1
-    ) internal view returns (uint128) {
+    ) public view returns (uint128) {
         (uint160 sqrtRatioX96, , , , , , ) = pool.slot0();
         return
             LiquidityAmounts.getLiquidityForAmounts(
