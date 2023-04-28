@@ -31,12 +31,10 @@ import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.so
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import "@uniswap/v3-periphery/contracts/libraries/PositionKey.sol";
 
-//import "http://github.com/Uniswap/v3-core/blob/0.8/contracts/libraries/TickMath.sol";
 import "./libraries/TickMath.sol";
 import "./libraries/LiquidityAmounts.sol";
 
 
-import "hardhat/console.sol";
 /**
  * @title   Booster pool
  * @notice  A pool that provides liquidity on Uniswap V3.
@@ -49,10 +47,9 @@ contract BoosterPool is
 {
     using SafeERC20 for IERC20;
 
-    event DepositOneAsset(
-        uint128 liquidity,
-        uint256 balance0,
-        uint256 balance1
+    event OneAsset(
+        address indexed token,
+        uint256 amount
     );
 
     event Deposit(
@@ -71,6 +68,15 @@ contract BoosterPool is
         uint256 amount1
     );
 
+    /**
+     * @notice The event is called when there is a collection of fees from a uniswap.
+     * @param feesToPool0 users reward received in token 0
+     * @param feesToPool1 users reward received in token 1
+     * @param feesToTreasuryA0 protocol 'A' commission from earned reward received in token 0, will be stored in the 'Treasury A'
+     * @param feesToTreasuryA1 protocol 'A' commission from earned reward received in token 1, will be stored in the 'Treasury A'
+     * @param feesToTreasuryB0 protocol 'B' commission from earned reward received in token 0, will be stored in the 'Treasury B'
+     * @param feesToTreasuryB1 protocol 'B' commission from earned reward received in token 1, will be stored in the 'Treasury B'
+     */
     event CollectFees(
         uint256 feesToPool0,
         uint256 feesToPool1,
@@ -79,14 +85,12 @@ contract BoosterPool is
         uint256 feesToTreasuryB0,
         uint256 feesToTreasuryB1
     );
+    
+    //event Snapshot(int24 tick, uint256 totalAmount0, uint256 totalAmount1, uint256 totalSupply);
 
-    event Total(
-        uint128 liquidityTotal,
-        uint256 liquidityDesired
-    );
-
-    event Snapshot(int24 tick, uint256 totalAmount0, uint256 totalAmount1, uint256 totalSupply);
-
+    /**
+     * @notice Events that change key protocol variables
+     */
     event AddressA(address oldAddress, address newAddress);
     event AddressB(address oldAddress, address newAddress);
     event ProtocolFeeA(uint256 oldProtocolFee, uint256 newProtocolFee);
@@ -94,14 +98,10 @@ contract BoosterPool is
     event PendingGovernance(address candidate);
     event Governance(address oldGovernance, address newGovernance);
     event Strategy(address oldStrategy, address newStrategy);
+    /**
+     * @notice Protocol deactivation event, after that only withdrawals work
+     */
     event Deactivate();
-
-    struct AMOUNTS{
-        uint256 SB_amount0;
-        uint256 SB_amount1;
-        int256 SWAP_amount0;
-        int256 SWAP_amount1;
-    }
 
     IUniswapV3Pool public immutable pool;
     IERC20 public immutable token0;
@@ -176,108 +176,24 @@ contract BoosterPool is
         baseUpper = _tickUpper; 
     }
 
-    function buyExact(
-        address token,
-        uint256 amountOut,
-        uint160 sqrtPriceLimitX96
-    ) private returns (uint256 amountIn){
-        bool zeroForOne = token == address(token0);
-console.log("### buy zeroForOne - ", zeroForOne);
-console.log("### amountOut - ", amountOut);
-        (int256 amount0Delta, int256 amount1Delta) = pool.swap(
-            address(this),
-            zeroForOne,
-            -int256(amountOut),
-            sqrtPriceLimitX96 == 0
-            ? (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
-            : sqrtPriceLimitX96,
-            ""
-        );
-        uint256 amountOutReceived;
-        (amountIn, amountOutReceived) = zeroForOne
-        ? (uint256(amount0Delta), uint256(-amount1Delta))
-        : (uint256(amount1Delta), uint256(-amount0Delta));
-        // it's technically possible to not receive the full output amount,
-        // so if no price limit has been specified, require this possibility away
-        if (sqrtPriceLimitX96 == 0) require(amountOutReceived == amountOut);
-    }
+    //
+    // EXTERNAL NON-VIEW
+    //
 
-    function sellExact(
-        address token,
-        uint256 amountIn,
-        uint160 sqrtPriceLimitX96
-    ) private returns (uint256 amountOut){
-        bool zeroForOne = token == address(token0);
-console.log("### sell zeroForOne - ", zeroForOne);
-console.log("### amountIn - ", amountIn);
-        (int256 amount0, int256 amount1) = pool.swap(
-            address(this),
-            zeroForOne,
-            int256(amountIn),
-            sqrtPriceLimitX96 == 0
-            ? (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
-            : sqrtPriceLimitX96,
-            ""
-        );
-        return uint256(-(zeroForOne ? amount1 : amount0));
-    }
-
-    function calcDepositAmounts(
-        address token,
-        uint256 amount
-    ) public view returns (uint256 amount0, uint256 amount1){
-
-        (uint160 sqrtPriceX96, , , , , , ) = pool.slot0();
-        uint160 sqrtRatioAX96 = TickMath.getSqrtRatioAtTick(baseLower);
-        uint160 sqrtRatioBX96 = TickMath.getSqrtRatioAtTick(baseUpper);
-        uint256 calc_amount0;
-        uint256 calc_amount1;
-console.log("### sqrtPriceX96", sqrtPriceX96);
-        if(address(token0) == token){
-            calc_amount0 = amount;
-            calc_amount1 = FullMath.mulDiv(amount, uint256(sqrtPriceX96) * uint256(sqrtPriceX96), 1 << 192);
-        }else{
-            calc_amount0 = FullMath.mulDiv(amount, 1 << 192, uint256(sqrtPriceX96) * uint256(sqrtPriceX96));
-            calc_amount1 = amount;
-        }
-
-console.log("###  calc asset0 ", calc_amount0);
-console.log("###  calc asset1 ", calc_amount1);
-
-        require(calc_amount0 > 0 , "LA 0");
-        require(calc_amount1 > 0 , "LA 1");
-
-        //let price_ratio = Number(calc_amount0)/Number(usdc_amount);
-        //let pool_ratio = res[0]/res[1];
-        //let x = Number(calc_amount0);
-        //let x_deposit = x / (1 + price_ratio/pool_ratio);
-        //let y_deposit = (x - x_deposit) / price_ratio;
-
-        (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
-            sqrtPriceX96,
-            sqrtRatioAX96,
-            sqrtRatioBX96,
-            1e18
-        );
-console.log("###  amount0 - ", amount0);
-console.log("###  amount1 - ", amount1);
-
-//        uint256 priceRatio = calc_amount0 / calc_amount1;
-//        uint256 poolRatio = amount0 / amount1;
-
-
-        amount0 = FullMath.mulDiv(calc_amount0 * amount0,
-                            amount1 * calc_amount1,
-                            amount1 * (calc_amount1 * amount0 + amount1 * calc_amount0));
-
-        amount1 = FullMath.mulDiv(calc_amount0 - amount0,
-                                calc_amount1,
-                                calc_amount0);
-console.log("###  amount0 - ", amount0);
-console.log("###  amount1 - ", amount1);
-    }
-
-
+    /**
+     * @notice Deposit in one of two assets.
+     * Part of the assets is exchanged in the Uniswap pool to obtain the required proportion.
+     * Surplus will be returned to the user.
+     * @dev The calculation uses the current price in the pool and
+     * calculates the proportion for the deposit in a certain uniswap range at the initial moment.
+     * The impact on the price and the proportion of the deposit is not taken into account, it only affects the size of the refund.
+     * @param token Deposit token address
+     * @param amount Max amount of token to deposit
+     * @param to Recipient of shares
+     * @return shares Number of shares minted
+     * @return amount0 Amount of token0 deposited
+     * @return amount1 Amount of token1 deposited
+     */
     function depositOneAsset(
         address token,
         uint256 amount,
@@ -291,38 +207,38 @@ console.log("###  amount1 - ", amount1);
         // Poke positions so vault's current holdings are up-to-date
         _poke(baseLower, baseUpper);
 
-        (amount0, amount1) = calcDepositAmounts(token, amount);
+        //оценка
+        (uint256 estimatedAmount0, uint256 estimatedAmount1) = estimatedAmountsForOneAsset(token, amount);
 
-        uint256 start_amount0 = getBalance0();
-        uint256 start_amount1 = getBalance1();
+        uint256 startAmount0 = getBalance0();
+        uint256 startAmount1 = getBalance1();
 
-        //Transfer
+        //Transfer desired amount to contract
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        emit OneAsset(token, amount);
 
-        uint256 amountRes;
         if(address(token0) == token){
-            if(amount0 < amount1)
-                amountRes = sellExact(token, amount - amount0, 0);
+            if(estimatedAmount0 < estimatedAmount1)
+                _sellExact(token, amount - estimatedAmount0, 0);
             else
-                amountRes = buyExact(token, amount1, 0);
+                _buyExact(token, estimatedAmount1, 0);
         }else{
-            if(amount0 < amount1)
-                amountRes = buyExact(token, amount0, 0);
+            if(amount0 < estimatedAmount1)
+                _buyExact(token, estimatedAmount0, 0);
             else
-                amountRes = sellExact(token, amount - amount1, 0);
+                _sellExact(token, amount - estimatedAmount1, 0);
         }
-console.log("### amountRes", amountRes);
-console.log("###  contract balance after swap amount0 %s   amount1 %s",getBalance0(),getBalance1());
-        //calculation of the deposit amount after the swap
+        //calculation of the desired deposit amount after the swap
         //the deposit amount is the current balance of the contract minus the starting balance of the contract
-        uint256 deposit_amount0 = getBalance0() - start_amount0;
-        uint256 deposit_amount1 = getBalance1() - start_amount1;
-        (shares, amount0, amount1) = _calcSharesAndAmounts(deposit_amount0, deposit_amount1, start_amount0, start_amount1);
-        require(shares > 0, "shares to low");
-        uint256 refund0 = getBalance0() - start_amount0 - amount0;
-        uint256 refund1 = getBalance1() - start_amount1 - amount1;
+        uint256 desiredAmount0 = getBalance0() - startAmount0;
+        uint256 desiredAmount1 = getBalance1() - startAmount1;
 
-console.log("### refund %s, %s ", refund0, refund1);
+        (shares, amount0, amount1) = _calcSharesAndAmounts(desiredAmount0, desiredAmount1, startAmount0, startAmount1);
+        require(shares > 0, "shares to low");
+        //the amount of assets that was not placed in the pool and will be returned to the sender
+        uint256 refund0 = getBalance0() - startAmount0 - amount0;
+        uint256 refund1 = getBalance1() - startAmount1 - amount1;
+
         if(refund0 > 0)
             token0.safeTransfer(msg.sender, refund0);
         if(refund1 > 0)
@@ -334,11 +250,9 @@ console.log("### refund %s, %s ", refund0, refund1);
     }
 
     /**
-     * @notice Deposits tokens in proportion to the vault's current holdings.
-     * @dev These tokens sit in the vault and are not used for liquidity on
-     * Uniswap until the next rebalance. Also note it's not necessary to check
-     * if user manipulated price to deposit cheaper, as the value of range
-     * orders can only by manipulated higher.
+     * @notice Deposits tokens in the current proportion of the uniswap pool in the set range.
+     * @dev The user's tokens are immediately placed in the uniswap pool.
+     * Also, along with this, there is a reinvestment of previously earned fees.
      * @param amount0Desired Max amount of token0 to deposit
      * @param amount1Desired Max amount of token1 to deposit
      * @param amount0Min Revert if resulting `amount0` is less than this
@@ -368,62 +282,17 @@ console.log("### refund %s, %s ", refund0, refund1);
         require(amount0 >= amount0Min, "amount0Min");
         require(amount1 >= amount1Min, "amount1Min");
 
-console.log("deposit amount0 %s   amount1 %s",uint(amount0),uint(amount1));
         // Pull in tokens from sender
         if (amount0 > 0) token0.safeTransferFrom(msg.sender, address(this), amount0);
         if (amount1 > 0) token1.safeTransferFrom(msg.sender, address(this), amount1);
 
-        // Mint shares to recipient
+        //Mint shares to recipient
         _mint(to, shares);
         emit Deposit(msg.sender, to, shares, amount0, amount1);
         _reinvest(0, 0);
     }
 
-    /// @dev Do zero-burns to poke a position on Uniswap so earned fees are
-    /// updated. Should be called if total amounts needs to include up-to-date
-    /// fees.
-    function _poke(int24 tickLower, int24 tickUpper) internal {
-        (uint128 liquidity, , , , ) = _position(tickLower, tickUpper);
-        if (liquidity > 0) {
-            pool.burn(tickLower, tickUpper, 0);
-        }
-    }
-
-    /// @dev Calculates the largest possible `amount0` and `amount1` such that
-    /// they're in the same proportion as total amounts, but not greater than
-    /// `amount0Desired` and `amount1Desired` respectively.
-    function _calcSharesAndAmounts(uint256 amount0Desired, uint256 amount1Desired, uint256 contractBalance0, uint256 contractBalance1)
-        internal
-        returns (
-            uint256 shares,
-            uint256 amount0,
-            uint256 amount1
-        )
-    {
-        uint128 liquidityDesired = _liquidityForAmounts(baseLower, baseUpper, amount0Desired, amount1Desired);
-        uint256 BPtotalSupply = totalSupply();
-
-        uint128 liquidityTotal = _getTotalLiquidity(contractBalance0, contractBalance1);
-        //uint128 liquidityTotal = _liquidityForAmounts(baseLower, baseUpper, total0, total1);
-console.log("###  liquidityDesired %s   BPtotalSupply %s   liquidityTotal %s",liquidityDesired,BPtotalSupply,liquidityTotal);
-        emit Total(liquidityTotal, liquidityDesired);
-
-        // If total supply > 0, vault can't be empty
-        assert(BPtotalSupply == 0 || liquidityTotal > 0 );
-
-        (amount0, amount1) = _amountsForLiquidity(baseLower, baseUpper, liquidityDesired);
-        //adding one penny due to loss during conversion 
-        (amount0, amount1) = ((amount0 + 1), (amount1 + 1));
-        if (BPtotalSupply == 0) {
-            // For first deposit, just use the liquidity desired      
-            shares = liquidityDesired;
-        } else {
-            shares = uint256(liquidityDesired) * BPtotalSupply / liquidityTotal;        
-        }
-console.log("###  shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
-    }
-
-    function calcSharesAndAmounts(uint256 amount0Desired, uint256 amount1Desired) 
+    function calcSharesAndAmounts(uint256 amount0Desired, uint256 amount1Desired)
         external
         returns (
             uint256 shares,
@@ -436,7 +305,9 @@ console.log("###  shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
     }
 
     /**
-     * @notice Withdraws tokens in proportion to the vault's holdings.
+     * @notice Withdraws tokens in proportion to the position in Uniswap.
+     * @dev The dust that remains when reinvesting fees is not used in the calculations.
+     * The bot monitors the accumulation of dust and, if necessary, reinvests with a swap
      * @param shares Shares burned by sender
      * @param amount0Min Revert if resulting `amount0` is smaller than this
      * @param amount1Min Revert if resulting `amount1` is smaller than this
@@ -477,26 +348,6 @@ console.log("###  shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
         emit Withdraw(msg.sender, to, shares, amount0, amount1);
     }
 
-    /// @dev Withdraws share of liquidity in a range from Uniswap pool.
-    function _burnLiquidityShare(
-        int24 tickLower,
-        int24 tickUpper,
-        uint256 shares,
-        uint256 BPtotalSupply
-    ) internal returns (uint256 amount0, uint256 amount1) {
-        (uint128 totalLiquidity, , , , ) = _position(tickLower, tickUpper);
-        uint256 liquidity = uint256(totalLiquidity) * shares / BPtotalSupply;
-
-        if (liquidity > 0) {
-            (uint256 burned0, uint256 burned1, uint256 fees0, uint256 fees1) =
-                _burnAndCollect(tickLower, tickUpper, _toUint128(liquidity));
-
-            // Add share of fees
-            amount0 = burned0 + (fees0 * shares / BPtotalSupply);
-            amount1 = burned1 + (fees1 * shares / BPtotalSupply);
-        }
-    }
-
     /**
      * @notice The fees earned are withdrawn from Uniswap V3 
      * and the maximum possible liquidity is deposited into the position.
@@ -513,15 +364,6 @@ console.log("###  shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
         require(msg.sender == strategy, "strategy");
         _poke(baseLower, baseUpper);
         _reinvest(swapAmount, sqrtPriceLimitX96);
-    }
-
-    function _reinvest(
-        int256 swapAmount,
-        uint160 sqrtPriceLimitX96
-    ) internal {
-        _burnAndCollect(baseLower, baseUpper, 0);
-        // swap and mint liquidity (fees) to position
-        _swapAndMint(swapAmount, sqrtPriceLimitX96, baseLower, baseUpper);
     }
 
     /**
@@ -552,18 +394,357 @@ console.log("###  shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
         (baseLower, baseUpper) = (tickLower, tickUpper);
     }
 
+    /**
+     * @notice calculates how many assets token0 and token1 can be obtained for BP tokens
+     * @dev used with static call in frontend
+     * @param amountBP Amount of BP tokens for whom the calculation
+     * @return amount0 computed value of token0
+     * @return amount1 computed value of token1
+     */
+    function getTotalAmounts(uint256 amountBP)
+        external
+        returns(uint256 amount0, uint256 amount1)
+    {
+        uint256 BPtotalSupply = totalSupply();
+        if(BPtotalSupply > 0){
+            _poke(baseLower, baseUpper);
+            (amount0,  amount1) = _getPositionAmounts();
+            (amount0,  amount1) = ((amount0 * amountBP / BPtotalSupply), (amount1 * amountBP / BPtotalSupply));
+        } else {
+            (amount0,  amount1) = (0,0);
+        }
+    }
+
+    /**
+     * @notice Amounts of token0 and token1 in the Uniswap V3 pool to be collected
+     * @return collect0 amount of accrued fees in token0
+     * @return collect1 amount of accrued fees in token1
+     */
+    function collectPositionFees()
+        external
+        returns(uint256 collect0, uint256 collect1)
+    {
+        _poke(baseLower, baseUpper);
+        (,,collect0, collect1) = _burnAndCollect(baseLower, baseUpper, 0);
+    }
+
+    /**
+     * @notice Used to collect accumulated protocol fees from the treasury A.
+     * @param amount0 amount token0 to the collect
+     * @param amount1 amount token1 to the collect
+     * @param to Recipient of tokens
+     */
+    function collectTreasuryA(
+        uint256 amount0,
+        uint256 amount1,
+        address to
+    ) external onlyAddressA {
+        treasuryA0 = treasuryA0 - amount0;
+        treasuryA1 = treasuryA1 - amount1;
+        if (amount0 > 0) token0.safeTransfer(to, amount0);
+        if (amount1 > 0) token1.safeTransfer(to, amount1);
+    }
+
+    /**
+     * @notice Used to collect accumulated protocol fees from the treasury B.
+     * @param amount0 amount token0 to the collect
+     * @param amount1 amount token1 to the collect
+     * @param to Recipient of tokens
+     */
+    function collectTreasuryB(
+        uint256 amount0,
+        uint256 amount1,
+        address to
+    ) external onlyAddressB {
+        treasuryB0 = treasuryB0 - amount0;
+        treasuryB1 = treasuryB1 - amount1;
+        if (amount0 > 0) token0.safeTransfer(to, amount0);
+        if (amount1 > 0) token1.safeTransfer(to, amount1);
+    }
+
+    /**
+     * @notice Removes tokens accidentally sent to this vault.
+     * @param token token to the sweep
+     * @param amount amount to the sweep
+     * @param to Recipient of tokens
+     */
+    function sweep(
+        IERC20 token,
+        uint256 amount,
+        address to
+    ) external onlyGovernance {
+        require(token != token0 && token != token1, "token");
+        token.safeTransfer(to, amount);
+    }
+
+    /**
+     * @notice Used to set the strategy contract that determines the position
+     * ranges and calls rebalance(). Must be called after this vault is
+     * deployed.
+     */
+    function setStrategy(address newStrategy) external onlyGovernance {
+        require(newStrategy != address(0) && newStrategy != address(this), "strategy");
+        emit Strategy(strategy, newStrategy);
+        strategy = newStrategy;
+    }
+
+    /**
+     * @notice Setting a new address that will have access to Treasure A
+     * @param newAddressA new address to use Treasury A
+     */
+    function setAddressA(address newAddressA) external onlyGovernance {
+        require(newAddressA != address(0) && newAddressA != address(this), "addressA");
+        emit AddressA(addressA, newAddressA);
+        addressA = newAddressA;       
+    }
+
+    /**
+     * @notice Setting a new address that will have access to Treasure B
+     * @param newAddressB new address to use Treasury B
+     */
+    function setAddressB(address newAddressB) external onlyGovernance {
+        require(newAddressB != address(0) && newAddressB != address(this), "addressB");
+        emit AddressB(addressB, newAddressB);
+        addressB = newAddressB;
+    }
+
+    /**
+     * @notice Used to change the protocol fee charged on pool fees earned from
+     * Uniswap, expressed as multiple of 1e-6.
+     * @param newProtocolFeeA new fee value
+     */
+    function setProtocolFeeA(uint256 newProtocolFeeA) external onlyGovernance {
+        require((newProtocolFeeA + protocolFeeB) < 1e6, "protocolFeeA");
+        emit ProtocolFeeA(protocolFeeA, newProtocolFeeA);
+        protocolFeeA = newProtocolFeeA;
+    }
+
+    /**
+     * @notice Used to change the protocol fee charged on pool fees earned from
+     * Uniswap, expressed as multiple of 1e-6.
+     * @param newProtocolFeeB new fee value
+     */
+    function setProtocolFeeB(uint256 newProtocolFeeB) external onlyGovernance {
+        require((newProtocolFeeB + protocolFeeA) < 1e6, "protocolFeeB");
+        emit ProtocolFeeB(protocolFeeB, newProtocolFeeB);
+        protocolFeeB = newProtocolFeeB;
+    }
+
+    /**
+     * @notice The method disables the protocol, only the withdrawal of funds by users remains available.
+     */
+    function deactivateMode() external onlyGovernance {
+        require(!isDeactivated, "deactivated"); 
+        isDeactivated = true;
+        (uint128 baseLiquidity, , , , ) = _position(baseLower, baseUpper);
+        _burnAndCollect(baseLower, baseUpper, baseLiquidity);
+        emit Deactivate();
+    }
+
+    /**
+     * @notice Governance address is not updated until the new governance
+     * address has called `acceptGovernance()` to accept this responsibility.
+     * @param newGovernance new governance address
+     */
+    function setGovernance(address newGovernance) external onlyGovernance {
+        require(newGovernance != address(0) && newGovernance != address(this), "governance");
+        pendingGovernance = newGovernance;
+        emit PendingGovernance(pendingGovernance);
+    }
+
+    /**
+     * @notice `setGovernance()` should be called by the existing governance
+     * address prior to calling this function.
+     */
+    function acceptGovernance() external {
+        require(msg.sender == pendingGovernance, "pendingGovernance");
+        emit Governance(governance, msg.sender);
+        governance = msg.sender;    
+    }
+
+    //
+    // EXTERNAL VIEW
+    //
+
+    /**
+     * @notice Calculates the estimated amounts to deposit in a uniswap V3 from one of asset.
+     * @dev the calculation has assumptions in the values ​​of priceRatio and poolRatio,
+     * does not take into account the impact of the swap on the price and proportion in the uniswap pool
+     * x - deposit expressed in token0 
+     * y - deposit expressed in token1 
+     * pool_x, pool_y - proportion of assets in the pool
+     * 
+     *               x 
+     * price_ratio = ―         - proportion of assets at the current price
+     *               y
+     *
+     *              pool_x 
+     * pool_ratio = ――――――     - proportion of assets in the pool
+     *              pool_y
+     *
+     *                    x 
+     * deposit_x = ―――――――――――――――
+     *                 price_ratio 
+     *             1 + ―――――――――――
+     *                 pool_ratio
+     *
+     *             x - deposit_x
+     * deposit_y = ―――――――――――――
+     *              price_ratio
+     *
+     * @param token deposit token address
+     * @param amount desired deposit amount
+     * @return amount0 estimated Amount of token0
+     * @return amount1 estimated Amount of token1
+     */
+    function estimatedAmountsForOneAsset(
+        address token,
+        uint256 amount
+    ) public view returns (uint256 amount0, uint256 amount1){
+
+        (uint160 sqrtPriceX96, , , , , , ) = pool.slot0();
+        uint160 sqrtRatioAX96 = TickMath.getSqrtRatioAtTick(baseLower);
+        uint160 sqrtRatioBX96 = TickMath.getSqrtRatioAtTick(baseUpper);
+        uint256 calc_amount0;
+        uint256 calc_amount1;
+        if(address(token0) == token){
+            calc_amount0 = amount;
+            calc_amount1 = FullMath.mulDiv(amount, uint256(sqrtPriceX96) * uint256(sqrtPriceX96), 1 << 192);
+        }else{
+            calc_amount0 = FullMath.mulDiv(amount, 1 << 192, uint256(sqrtPriceX96) * uint256(sqrtPriceX96));
+            calc_amount1 = amount;
+        }
+
+        require(calc_amount0 > 0 , "LA 0");
+        require(calc_amount1 > 0 , "LA 1");
+
+        (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
+            sqrtPriceX96,
+            sqrtRatioAX96,
+            sqrtRatioBX96,
+            1e18
+        );
+
+        amount0 = FullMath.mulDiv(calc_amount0 * amount0,
+                            amount1 * calc_amount1,
+                            amount1 * (calc_amount1 * amount0 + amount1 * calc_amount0));
+
+        amount1 = FullMath.mulDiv(calc_amount0 - amount0,
+                                calc_amount1,
+                                calc_amount0);
+    }
+
+    /**
+     * @notice Balance of token0 in vault not used in any position.
+     */
+    function getBalance0() public view returns (uint256) {
+        return token0.balanceOf(address(this)) - treasuryA0 - treasuryB0;
+    }
+
+    /**
+     * @notice Balance of token1 in vault not used in any position.
+     */
+    function getBalance1() public view returns (uint256) {
+        return token1.balanceOf(address(this)) - treasuryA1 - treasuryB1;
+    }
+
+    //
+    // UNISWAP V3 CALLBACKS
+    //
+    
+    /// @dev Callback for Uniswap V3 pool.
+    function uniswapV3MintCallback(
+        uint256 amount0,
+        uint256 amount1,
+        bytes calldata data
+    ) external override {
+        require(msg.sender == address(pool));
+        if (amount0 > 0) token0.safeTransfer(msg.sender, amount0);
+        if (amount1 > 0) token1.safeTransfer(msg.sender, amount1);
+    }
+
+    /// @dev Callback for Uniswap V3 pool.
+    function uniswapV3SwapCallback(
+        int256 amount0Delta,
+        int256 amount1Delta,
+        bytes calldata data
+    ) external override {
+        require(msg.sender == address(pool));
+        if (amount0Delta > 0) token0.safeTransfer(msg.sender, uint256(amount0Delta));
+        if (amount1Delta > 0) token1.safeTransfer(msg.sender, uint256(amount1Delta));
+    }
+
+    //
+    // INTERNAL
+    //
+
+    /// @dev Do zero-burns to poke a position on Uniswap so earned fees are
+    /// updated. Should be called if total amounts needs to include up-to-date
+    /// fees.
+    function _poke(int24 tickLower, int24 tickUpper) internal {
+        (uint128 liquidity, , , , ) = _position(tickLower, tickUpper);
+        if (liquidity > 0) {
+            pool.burn(tickLower, tickUpper, 0);
+        }
+    }
+    
+    function _buyExact(
+        address token,
+        uint256 amountOut,
+        uint160 sqrtPriceLimitX96
+    ) internal returns (uint256 amountIn){
+        bool zeroForOne = token == address(token0);
+        (int256 amount0Delta, int256 amount1Delta) = pool.swap(
+            address(this),
+            zeroForOne,
+            -int256(amountOut),
+            sqrtPriceLimitX96 == 0
+            ? (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
+            : sqrtPriceLimitX96,
+            ""
+        );
+        uint256 amountOutReceived;
+        (amountIn, amountOutReceived) = zeroForOne
+        ? (uint256(amount0Delta), uint256(-amount1Delta))
+        : (uint256(amount1Delta), uint256(-amount0Delta));
+        // it's technically possible to not receive the full output amount,
+        // so if no price limit has been specified, require this possibility away
+        if (sqrtPriceLimitX96 == 0) require(amountOutReceived == amountOut);
+    }
+
+    function _sellExact(
+        address token,
+        uint256 amountIn,
+        uint160 sqrtPriceLimitX96
+    ) internal returns (uint256 amountOut){
+        bool zeroForOne = token == address(token0);
+        (int256 amount0, int256 amount1) = pool.swap(
+            address(this),
+            zeroForOne,
+            int256(amountIn),
+            sqrtPriceLimitX96 == 0
+            ? (zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1)
+            : sqrtPriceLimitX96,
+            ""
+        );
+        return uint256(-(zeroForOne ? amount1 : amount0));
+    }
+    
+    function _reinvest(
+        int256 swapAmount,
+        uint160 sqrtPriceLimitX96
+    ) internal {
+        _burnAndCollect(baseLower, baseUpper, 0);
+        // swap and mint liquidity (fees) to position
+        _swapAndMint(swapAmount, sqrtPriceLimitX96, baseLower, baseUpper);
+    }
+
     function _swapAndMint(
         int256 swapAmount,
         uint160 sqrtPriceLimitX96,
         int24 _baseLower,
         int24 _baseUpper
     ) internal {
-        // Emit snapshot to record balances and supply
-        uint256 balance0 = getBalance0();
-        uint256 balance1 = getBalance1();
-        (, int24 tick, , , , , ) = pool.slot0();
-        emit Snapshot(tick, balance0, balance1, totalSupply());
-
         if (swapAmount != 0) {
             pool.swap(
                 address(this),
@@ -572,14 +753,61 @@ console.log("###  shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
                 sqrtPriceLimitX96,
                 ""
             );
-            balance0 = getBalance0();
-            balance1 = getBalance1();
         }
-
         // Place base order on Uniswap
-        uint128 liquidity = _liquidityForAmounts(_baseLower, _baseUpper, balance0, balance1);
+        uint128 liquidity = _liquidityForAmounts(_baseLower, _baseUpper, getBalance0(), getBalance1());
         if (liquidity > 0) {
             pool.mint(address(this), _baseLower, _baseUpper, liquidity, "");
+        }
+    }
+
+    /// @dev Withdraws share of liquidity in a range from Uniswap pool.
+    function _burnLiquidityShare(
+        int24 tickLower,
+        int24 tickUpper,
+        uint256 shares,
+        uint256 BPtotalSupply
+    ) internal returns (uint256 amount0, uint256 amount1) {
+        (uint128 totalLiquidity, , , , ) = _position(tickLower, tickUpper);
+        uint256 liquidity = uint256(totalLiquidity) * shares / BPtotalSupply;
+
+        if (liquidity > 0) {
+            (uint256 burned0, uint256 burned1, uint256 fees0, uint256 fees1) =
+                _burnAndCollect(tickLower, tickUpper, _toUint128(liquidity));
+
+            // Add share of fees
+            amount0 = burned0 + (fees0 * shares / BPtotalSupply);
+            amount1 = burned1 + (fees1 * shares / BPtotalSupply);
+        }
+    }
+
+    /// @dev Calculates the largest possible `amount0` and `amount1` such that
+    /// they're in the same proportion as total amounts, but not greater than
+    /// `desiredAmount0` and `desiredAmount1` respectively.
+    function _calcSharesAndAmounts(uint256 desiredAmount0, uint256 desiredAmount1, uint256 contractBalance0, uint256 contractBalance1)
+        internal view
+        returns (
+            uint256 shares,
+            uint256 amount0,
+            uint256 amount1
+        )
+    {
+        uint128 liquidityUser = _liquidityForAmounts(baseLower, baseUpper, desiredAmount0, desiredAmount1);
+        uint256 BPtotalSupply = totalSupply();
+
+        uint128 liquidityTotal = _getTotalLiquidity(contractBalance0, contractBalance1);
+
+        // If total supply > 0, vault can't be empty
+        assert(BPtotalSupply == 0 || liquidityTotal > 0 );
+
+        (amount0, amount1) = _amountsForLiquidity(baseLower, baseUpper, liquidityUser);
+        //adding one penny due to loss during conversion 
+        (amount0, amount1) = ((amount0 + 1), (amount1 + 1));
+        if (BPtotalSupply == 0) {
+            // For first deposit, just use the liquidity desired      
+            shares = liquidityUser;
+        } else {
+            shares = uint256(liquidityUser) * BPtotalSupply / liquidityTotal;        
         }
     }
 
@@ -647,19 +875,23 @@ console.log("###  shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
 
     /**
     * @notice calculates the liquidity value in the Uniswap V3 pool, taking into account the accrued fee minus the protocol commission
-    * @return liquidity Total liquidity in pool and contract
+    * @return liquidity Total liquidity in pool and booster contract
     */
-    function _getTotalLiquidity(uint256 contractBalance0, uint256 contractBalance1) internal view returns (uint128 liquidity) {
+    function _getTotalLiquidity(uint256 contractBalance0, uint256 contractBalance1) 
+        internal view returns (uint128 liquidity) {
 
         (uint128 liquidityInPosition, , , uint128 tokensOwed0, uint128 tokensOwed1) =
             _position(baseLower, baseUpper);
-
         uint256 oneMinusFee = uint256(1e6) - (protocolFeeA + protocolFeeB);
-        uint256 amount0 = contractBalance0 + (uint256(tokensOwed0) * oneMinusFee / 1e6);
-        uint256 amount1 = contractBalance1 + (uint256(tokensOwed1) * oneMinusFee / 1e6);
 
+        uint256 fees0 = uint256(tokensOwed0) * oneMinusFee / 1e6;
+        uint256 fees1 = uint256(tokensOwed1) * oneMinusFee / 1e6;
+        uint256 amount0 = contractBalance0 + fees0;
+        uint256 amount1 = contractBalance1 + fees1;
+
+        uint128 liquidityToReinvest = _liquidityForAmounts(baseLower, baseUpper, amount0, amount1);
         //liquidity in position add liquidity from fees and contract balance
-        liquidity = liquidityInPosition + _liquidityForAmounts(baseLower, baseUpper, amount0, amount1);
+        liquidity = liquidityInPosition + liquidityToReinvest;
     }
 
     /**
@@ -680,54 +912,6 @@ console.log("###  shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
         uint256 oneMinusFee = uint256(1e6) - (protocolFeeA + protocolFeeB);
         amount0 = amount0 + (uint256(tokensOwed0) * oneMinusFee / 1e6);
         amount1 = amount1 + (uint256(tokensOwed1) * oneMinusFee / 1e6);
-    }
-
-    /**
-    * @notice calculates how many assets token0 and token1 can be obtained for BP tokens
-    * @param amountBP Amount of BP tokens for whom the calculation
-    * @return amount0 computed value of token0
-    * @return amount1 computed value of token1
-    */
-    function getTotalAmounts(uint256 amountBP)
-        external
-        returns(uint256 amount0, uint256 amount1)
-    {
-        uint256 BPtotalSupply = totalSupply();
-        if(BPtotalSupply > 0){
-            _poke(baseLower, baseUpper);
-            (amount0,  amount1) = _getPositionAmounts();
-            (amount0,  amount1) = ((amount0 * amountBP / BPtotalSupply), (amount1 * amountBP / BPtotalSupply));
-        } else {
-            (amount0,  amount1) = (0,0);
-        }
-    }
-
-    /**
-    * @notice Amounts of token0 and token1 in the Uniswap V3 pool to be collected
-    * @return collect0 amount of accrued fees in token0
-    * @return collect1 amount of accrued fees in token1
-    */
-    function collectPositionFees()
-        external
-        returns(uint256 collect0, uint256 collect1)
-    {
-        _poke(baseLower, baseUpper);
-        (,,collect0, collect1) = _burnAndCollect(baseLower, baseUpper, 0);
-    }
-
-    /**
-     * @notice Balance of token0 in vault not used in any position.
-     */
-    function getBalance0() public view returns (uint256) {
-        return token0.balanceOf(address(this)) - treasuryA0 - treasuryB0;
-
-    }
-
-    /**
-     * @notice Balance of token1 in vault not used in any position.
-     */
-    function getBalance1() public view returns (uint256) {
-        return token1.balanceOf(address(this)) - treasuryA1 - treasuryB1;
     }
 
     /// @dev Wrapper around `IUniswapV3Pool.positions()`.
@@ -786,133 +970,9 @@ console.log("###  shares %s, amount0 %s, amount1 %s", shares, amount0, amount1);
         return uint128(x);
     }
 
-    /// @dev Callback for Uniswap V3 pool.
-    function uniswapV3MintCallback(
-        uint256 amount0,
-        uint256 amount1,
-        bytes calldata data
-    ) external override {
-        require(msg.sender == address(pool));
-        if (amount0 > 0) token0.safeTransfer(msg.sender, amount0);
-        if (amount1 > 0) token1.safeTransfer(msg.sender, amount1);
-    }
-
-    /// @dev Callback for Uniswap V3 pool.
-    function uniswapV3SwapCallback(
-        int256 amount0Delta,
-        int256 amount1Delta,
-        bytes calldata data
-    ) external override {
-        require(msg.sender == address(pool));
-        if (amount0Delta > 0) token0.safeTransfer(msg.sender, uint256(amount0Delta));
-        if (amount1Delta > 0) token1.safeTransfer(msg.sender, uint256(amount1Delta));
-    }
-
-    /**
-     * @notice Used to collect accumulated protocol fees from the treasury A.
-     */
-    function collectTreasuryA(
-        uint256 amount0,
-        uint256 amount1,
-        address to
-    ) external onlyAddressA {
-        treasuryA0 = treasuryA0 - amount0;
-        treasuryA1 = treasuryA1 - amount1;
-        if (amount0 > 0) token0.safeTransfer(to, amount0);
-        if (amount1 > 0) token1.safeTransfer(to, amount1);
-    }
-
-    /**
-     * @notice Used to collect accumulated protocol fees from the treasury B.
-     */
-    function collectTreasuryB(
-        uint256 amount0,
-        uint256 amount1,
-        address to
-    ) external onlyAddressB {
-        treasuryB0 = treasuryB0 - amount0;
-        treasuryB1 = treasuryB1 - amount1;
-        if (amount0 > 0) token0.safeTransfer(to, amount0);
-        if (amount1 > 0) token1.safeTransfer(to, amount1);
-    }
-
-    /**
-     * @notice Removes tokens accidentally sent to this vault.
-     */
-    function sweep(
-        IERC20 token,
-        uint256 amount,
-        address to
-    ) external onlyGovernance {
-        require(token != token0 && token != token1, "token");
-        token.safeTransfer(to, amount);
-    }
-
-    /**
-     * @notice Used to set the strategy contract that determines the position
-     * ranges and calls rebalance(). Must be called after this vault is
-     * deployed.
-     */
-    function setStrategy(address newStrategy) external onlyGovernance {
-        require(newStrategy != address(0) && newStrategy != address(this), "strategy");
-        emit Strategy(strategy, newStrategy);
-        strategy = newStrategy;
-    }
-
-    function setAddressA(address newAddressA) external onlyGovernance {
-        require(newAddressA != address(0) && newAddressA != address(this), "addressA");
-        emit AddressA(addressA, newAddressA);
-        addressA = newAddressA;       
-    }
-
-    function setAddressB(address newAddressB) external onlyGovernance {
-        require(newAddressB != address(0) && newAddressB != address(this), "addressB");
-        emit AddressB(addressB, newAddressB);
-        addressB = newAddressB;
-    }
-    /**
-     * @notice Used to change the protocol fee charged on pool fees earned from
-     * Uniswap, expressed as multiple of 1e-6.
-     */
-    function setProtocolFeeA(uint256 newProtocolFeeA) external onlyGovernance {
-        require((newProtocolFeeA + protocolFeeB) < 1e6, "protocolFeeA");
-        emit ProtocolFeeA(protocolFeeA, newProtocolFeeA);
-        protocolFeeA = newProtocolFeeA;
-    }
-
-    function setProtocolFeeB(uint256 newProtocolFeeB) external onlyGovernance {
-        require((newProtocolFeeB + protocolFeeA) < 1e6, "protocolFeeB");
-        emit ProtocolFeeB(protocolFeeB, newProtocolFeeB);
-        protocolFeeB = newProtocolFeeB;
-    }
-
-    function deactivateMode() external onlyGovernance {
-        require(!isDeactivated, "deactivated"); 
-        isDeactivated = true;
-        (uint128 baseLiquidity, , , , ) = _position(baseLower, baseUpper);
-        _burnAndCollect(baseLower, baseUpper, baseLiquidity);
-        emit Deactivate();
-    }
-
-    /**
-     * @notice Governance address is not updated until the new governance
-     * address has called `acceptGovernance()` to accept this responsibility.
-     */
-    function setGovernance(address newGovernance) external onlyGovernance {
-        require(newGovernance != address(0) && newGovernance != address(this), "governance");
-        pendingGovernance = newGovernance;
-        emit PendingGovernance(pendingGovernance);
-    }
-
-    /**
-     * @notice `setGovernance()` should be called by the existing governance
-     * address prior to calling this function.
-     */
-    function acceptGovernance() external {
-        require(msg.sender == pendingGovernance, "pendingGovernance");
-        emit Governance(governance, msg.sender);
-        governance = msg.sender;    
-    }
+    //
+    // MODIFIERS
+    //
 
     modifier onlyGovernance {
         require(msg.sender == governance, "governance");
