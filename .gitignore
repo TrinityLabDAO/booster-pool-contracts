@@ -14,3 +14,9 @@ Uniswap/
 flat.sol
 
 privates.json
+
+artifacts/
+
+.idea/
+
+cache/
