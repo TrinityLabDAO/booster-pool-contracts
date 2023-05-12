@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity >=0.5.0;
 
-//import 'github.com/Uniswap/v3-core/blob/0.8/contracts/libraries/FullMath.sol';
 import './FullMath.sol';
 import '@uniswap/v3-core/contracts/libraries/FixedPoint96.sol';
+
+import "hardhat/console.sol";
 
 /// @title Liquidity amount functions
 /// @notice Provides functions for computing liquidity amounts from token amounts and prices
@@ -25,7 +26,7 @@ library LiquidityAmounts {
         uint160 sqrtRatioAX96,
         uint160 sqrtRatioBX96,
         uint256 amount0
-    ) internal pure returns (uint128 liquidity) {
+    ) internal  returns (uint128 liquidity) {
         if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
         uint256 intermediate = FullMath.mulDiv(sqrtRatioAX96, sqrtRatioBX96, FixedPoint96.Q96);
         unchecked {
@@ -43,9 +44,10 @@ library LiquidityAmounts {
         uint160 sqrtRatioAX96,
         uint160 sqrtRatioBX96,
         uint256 amount1
-    ) internal pure returns (uint128 liquidity) {
+    ) internal  returns (uint128 liquidity) {
         if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
         unchecked {
+            console.log(amount1);
             return toUint128(FullMath.mulDiv(amount1, FixedPoint96.Q96, sqrtRatioBX96 - sqrtRatioAX96));
         }
     }
@@ -64,7 +66,7 @@ library LiquidityAmounts {
         uint160 sqrtRatioBX96,
         uint256 amount0,
         uint256 amount1
-    ) internal pure returns (uint128 liquidity) {
+    ) internal  returns (uint128 liquidity) {
         if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
 
         if (sqrtRatioX96 <= sqrtRatioAX96) {
@@ -88,7 +90,7 @@ library LiquidityAmounts {
         uint160 sqrtRatioAX96,
         uint160 sqrtRatioBX96,
         uint128 liquidity
-    ) internal pure returns (uint256 amount0) {
+    ) internal  returns (uint256 amount0) {
         unchecked {
             if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
 
@@ -110,7 +112,7 @@ library LiquidityAmounts {
         uint160 sqrtRatioAX96,
         uint160 sqrtRatioBX96,
         uint128 liquidity
-    ) internal pure returns (uint256 amount1) {
+    ) internal  returns (uint256 amount1) {
         if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
 
         unchecked {
@@ -131,7 +133,7 @@ library LiquidityAmounts {
         uint160 sqrtRatioAX96,
         uint160 sqrtRatioBX96,
         uint128 liquidity
-    ) internal pure returns (uint256 amount0, uint256 amount1) {
+    ) internal returns (uint256 amount0, uint256 amount1) {
         if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
 
         if (sqrtRatioX96 <= sqrtRatioAX96) {

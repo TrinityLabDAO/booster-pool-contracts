@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
-// Copyright (c) 2023 TRINITY LAB
+// Copyright (c) 2023 TrinityLabDAO
 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -26,10 +26,10 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
-import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3MintCallback.sol";
-import "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol";
-import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
-import "@uniswap/v3-periphery/contracts/libraries/PositionKey.sol";
+import "./Algebra/core/contracts/interfaces/callback/IAlgebraMintCallback.sol";
+import "./Algebra/core/contracts/interfaces/callback/IAlgebraSwapCallback.sol";
+import "./Algebra/core/contracts/interfaces/IAlgebraPool.sol";
+import "./Algebra/periphery/contracts/libraries/PositionKey.sol";
 
 import "./libraries/TickMath.sol";
 import "./libraries/LiquidityAmounts.sol";
@@ -37,15 +37,15 @@ import "./libraries/LiquidityAmounts.sol";
 
 /**
  * @title   BoosterPool
- * @notice  A vault that manages liquidity on Uniswap V3.
+ * @notice  A vault that manages liquidity on Algebra.
  * It allows users to deposit a single asset or both assets in the pool, 
  * and it mints corresponding LP (liquidity provider) tokens (of ERC20 standard) that represent their share of the pool's liquidity.
  * The LP tokens can be redeemed for the deposited assets at any time.
  * The contract also collects fees from the Uniswap pool, which are distributed to users and two treasury addresses.
  */
 contract BoosterPool is
-    IUniswapV3MintCallback,
-    IUniswapV3SwapCallback,
+    IAlgebraMintCallback,
+    IAlgebraSwapCallback,
     ERC20,
     ReentrancyGuard
 {
@@ -118,8 +118,8 @@ contract BoosterPool is
      */
     event Deactivate();
 
-    // Uniswap V3 pool address to provide liquidity to.
-    IUniswapV3Pool public immutable pool;
+    // Algebra pool address to provide liquidity to.
+    IAlgebraPool public immutable pool;
     // The token0 of the `pool`.
     IERC20 public immutable token0;
     // The token1 of the `pool`.
@@ -173,8 +173,8 @@ contract BoosterPool is
      * @param tokenName The name of the `shares` token
      * @param tokenSymbol The symbol of the `shares` token
      * @param _strategy Address that can rebalance and reinvest
-     * @param _tickLower Lower tick of the position in the underlying Uniswap V3 pool
-     * @param _tickUpper Upper tick of the position in the underlying Uniswap V3 pool
+     * @param _tickLower Lower tick of the position in the underlying Algebra pool
+     * @param _tickUpper Upper tick of the position in the underlying Algebra pool
      */
     constructor(
         address _pool,
@@ -188,10 +188,10 @@ contract BoosterPool is
         int24 _tickLower,
         int24 _tickUpper
     ) ERC20(tokenName, tokenSymbol) {
-        pool = IUniswapV3Pool(_pool);
-        token0 = IERC20(IUniswapV3Pool(_pool).token0());
-        token1 = IERC20(IUniswapV3Pool(_pool).token1());
-        int24 _tickSpacing = IUniswapV3Pool(_pool).tickSpacing();
+        pool = IAlgebraPool(_pool);
+        token0 = IERC20(IAlgebraPool(_pool).token0());
+        token1 = IERC20(IAlgebraPool(_pool).token1());
+        int24 _tickSpacing = IAlgebraPool(_pool).tickSpacing();
         tickSpacing = _tickSpacing;
 
         governance = msg.sender;
@@ -324,7 +324,7 @@ contract BoosterPool is
         if (amount0 > 0) token0.safeTransferFrom(msg.sender, address(this), amount0);
         if (amount1 > 0) token1.safeTransferFrom(msg.sender, address(this), amount1);
 
-        //Mint shares to recipient
+        // Mint shares to recipient
         _mint(to, shares);
         emit Deposit(msg.sender, to, shares, amount0, amount1);
         _reinvest(0, 0);
@@ -425,7 +425,7 @@ contract BoosterPool is
         _checkRange(tickLower, tickUpper, tickSpacing);
 
         // Withdraw all current liquidity from Uniswap pool
-        (uint128 baseLiquidity, , , , ) = _position(baseLower, baseUpper);
+        (uint128 baseLiquidity, , , , , ) = _position(baseLower, baseUpper);
         _burnAndCollect(baseLower, baseUpper, baseLiquidity);
         
         // swap and mint liquidity to position
@@ -575,7 +575,7 @@ contract BoosterPool is
     function deactivateMode() external onlyGovernance {
         require(!isDeactivated, "deactivated"); 
         isDeactivated = true;
-        (uint128 baseLiquidity, , , , ) = _position(baseLower, baseUpper);
+        (uint128 baseLiquidity, , , , , ) = _position(baseLower, baseUpper);
         _burnAndCollect(baseLower, baseUpper, baseLiquidity);
         emit Deactivate();
     }
@@ -641,7 +641,7 @@ contract BoosterPool is
         uint256 amount
     ) public view returns (uint256 amount0, uint256 amount1){
 
-        (uint160 sqrtPriceX96, , , , , , ) = pool.slot0();
+        (uint160 sqrtPriceX96, , , , , , ) = pool.globalState();
         uint160 sqrtRatioAX96 = TickMath.getSqrtRatioAtTick(baseLower);
         uint160 sqrtRatioBX96 = TickMath.getSqrtRatioAtTick(baseUpper);
         uint256 calc_amount0;
@@ -692,7 +692,7 @@ contract BoosterPool is
     //
     
     /// @dev Callback for Uniswap V3 pool.
-    function uniswapV3MintCallback(
+    function algebraMintCallback(
         uint256 amount0,
         uint256 amount1,
         bytes calldata data
@@ -703,7 +703,7 @@ contract BoosterPool is
     }
 
     /// @dev Callback for Uniswap V3 pool.
-    function uniswapV3SwapCallback(
+    function algebraSwapCallback(
         int256 amount0Delta,
         int256 amount1Delta,
         bytes calldata data
@@ -721,7 +721,7 @@ contract BoosterPool is
     /// updated. Should be called if total amounts needs to include up-to-date
     /// fees.
     function _poke(int24 tickLower, int24 tickUpper) internal {
-        (uint128 liquidity, , , , ) = _position(tickLower, tickUpper);
+        (uint128 liquidity, , , , , ) = _position(tickLower, tickUpper);
         if (liquidity > 0) {
             pool.burn(tickLower, tickUpper, 0);
         }
@@ -796,7 +796,7 @@ contract BoosterPool is
         // Place base order on Uniswap
         uint128 liquidity = _liquidityForAmounts(_baseLower, _baseUpper, getBalance0(), getBalance1());
         if (liquidity > 0) {
-            pool.mint(address(this), _baseLower, _baseUpper, liquidity, "");
+            pool.mint(address(this), address(this), _baseLower, _baseUpper, liquidity, "");
         }
     }
 
@@ -807,7 +807,7 @@ contract BoosterPool is
         uint256 shares,
         uint256 BPtotalSupply
     ) internal returns (uint256 amount0, uint256 amount1) {
-        (uint128 totalLiquidity, , , , ) = _position(tickLower, tickUpper);
+        (uint128 totalLiquidity, , , , , ) = _position(tickLower, tickUpper);
         uint256 liquidity = uint256(totalLiquidity) * shares / BPtotalSupply;
 
         if (liquidity > 0) {
@@ -919,7 +919,7 @@ contract BoosterPool is
     function _getTotalLiquidity(uint256 contractBalance0, uint256 contractBalance1) 
         internal view returns (uint128 liquidity) {
 
-        (uint128 liquidityInPosition, , , uint128 tokensOwed0, uint128 tokensOwed1) =
+        (uint128 liquidityInPosition, , , , uint128 tokensOwed0, uint128 tokensOwed1) =
             _position(baseLower, baseUpper);
         uint256 oneMinusFee = uint256(1e6) - (protocolFeeA + protocolFeeB);
 
@@ -943,7 +943,7 @@ contract BoosterPool is
         view
         returns (uint256 amount0, uint256 amount1)
     {
-        (uint128 liquidity, , , uint128 tokensOwed0, uint128 tokensOwed1) =
+        (uint128 liquidity, , , , uint128 tokensOwed0, uint128 tokensOwed1) =
             _position(baseLower, baseUpper);
         (amount0, amount1) = _amountsForLiquidity(baseLower, baseUpper, liquidity);
 
@@ -959,6 +959,7 @@ contract BoosterPool is
         view
         returns (
             uint128,
+            uint32, 
             uint256,
             uint256,
             uint128,
@@ -975,7 +976,7 @@ contract BoosterPool is
         int24 tickUpper,
         uint128 liquidity
     ) public view returns (uint256, uint256) {
-        (uint160 sqrtRatioX96, , , , , , ) = pool.slot0();
+        (uint160 sqrtRatioX96, , , , , , ) = pool.globalState();
         return
             LiquidityAmounts.getAmountsForLiquidity(
                 sqrtRatioX96,
@@ -992,7 +993,7 @@ contract BoosterPool is
         uint256 amount0,
         uint256 amount1
     ) public view returns (uint128) {
-        (uint160 sqrtRatioX96, , , , , , ) = pool.slot0();
+        (uint160 sqrtRatioX96, , , , , , ) = pool.globalState();
         return
             LiquidityAmounts.getLiquidityForAmounts(
                 sqrtRatioX96,
