@@ -235,10 +235,8 @@ contract BoosterPool is
         uint256 amount,
         uint160 sqrtPriceLimitX96,
         address to
-    ) external nonReentrant returns (uint256 shares, uint256 amount0, uint256 amount1){
-        require(!isDeactivated, "deactivated"); 
+    ) external nonReentrant isActive returns (uint256 shares, uint256 amount0, uint256 amount1){
         require(amount > 0 , "amount");
-        require(token != address(0) && token != address(this), "token");
         require((address(token0) == token) || (address(token1) == token), "incorrect token");
 
         // Poke positions so vault's current holdings are up-to-date.
@@ -256,15 +254,19 @@ contract BoosterPool is
 
         // Swap estimated amount based on which token is provided.
         if(address(token0) == token){
-            if(estimatedAmount0 < estimatedAmount1)
+            if(estimatedAmount0 == 0)
+                _sellExact(token, amount, sqrtPriceLimitX96);
+            else if(estimatedAmount0 < estimatedAmount1)
                 _sellExact(token, amount - estimatedAmount0, sqrtPriceLimitX96);
-            else
+            else if(estimatedAmount1 != 0)
                 _buyExact(token, estimatedAmount1, sqrtPriceLimitX96);
         }else{
-            if(amount0 < estimatedAmount1)
-                _buyExact(token, estimatedAmount0, sqrtPriceLimitX96);
-            else
+            if(estimatedAmount1 == 0)
+                _sellExact(token, amount, sqrtPriceLimitX96);
+            else if(estimatedAmount0 > estimatedAmount1)
                 _sellExact(token, amount - estimatedAmount1, sqrtPriceLimitX96);
+            else if(estimatedAmount0 != 0)
+                _buyExact(token, estimatedAmount0, sqrtPriceLimitX96);
         }
         // Calculation of the desired deposit amounts after the swap.
         // The deposit amount is the current balance of the contract minus the starting balance of the contract.
@@ -306,8 +308,7 @@ contract BoosterPool is
         uint256 amount0Min,
         uint256 amount1Min,
         address to
-    ) external nonReentrant returns (uint256 shares, uint256 amount0, uint256 amount1){
-        require(!isDeactivated, "deactivated"); 
+    ) external nonReentrant isActive returns (uint256 shares, uint256 amount0, uint256 amount1){
         require(amount0Desired > 0 || amount1Desired > 0, "amount0Desired or amount1Desired");
         require(to != address(0) && to != address(this), "to");
 
@@ -324,7 +325,7 @@ contract BoosterPool is
         if (amount0 > 0) token0.safeTransferFrom(msg.sender, address(this), amount0);
         if (amount1 > 0) token1.safeTransferFrom(msg.sender, address(this), amount1);
 
-        //Mint shares to recipient
+        // Mint shares to recipient
         _mint(to, shares);
         emit Deposit(msg.sender, to, shares, amount0, amount1);
         _reinvest(0, 0);
@@ -366,15 +367,18 @@ contract BoosterPool is
         // Burn shares
         _burn(msg.sender, shares);
 
-        //if the pool is deactivated, then the assets are taken from the contract storage, in proportion to the boosterPool tokens
-        if(isDeactivated){
-            // Calculate token amounts proportional to unused balances
-            amount0 = getBalance0() * shares / BPtotalSupply;
-            amount1 = getBalance1() * shares / BPtotalSupply;
-        } else {
+        // if the pool is deactivated, then the assets are taken from the contract storage, in proportion to the boosterPool tokens
+        if(!isDeactivated){
             // Withdraw proportion of liquidity from Uniswap pool
             (amount0, amount1) = _burnLiquidityShare(baseLower, baseUpper, shares, BPtotalSupply);
         }
+
+        uint256 contract_balance0 = getBalance0() - amount0;
+        uint256 contract_balance1 = getBalance1() - amount1;
+
+        // Calculate token amounts proportional to unused balances
+        amount0 += contract_balance0 * shares / BPtotalSupply;
+        amount1 += contract_balance1 * shares / BPtotalSupply;
 
         require(amount0 >= amount0Min, "amount0Min");
         require(amount1 >= amount1Min, "amount1Min");
@@ -397,9 +401,7 @@ contract BoosterPool is
     function reinvest(
         int256 swapAmount,
         uint160 sqrtPriceLimitX96
-    ) external nonReentrant {
-        require(!isDeactivated, "deactivated"); 
-        require(msg.sender == strategy, "strategy");
+    ) external nonReentrant onlyStrategy isActive{
         _poke(baseLower, baseUpper);
         _reinvest(swapAmount, sqrtPriceLimitX96);
     }
@@ -419,9 +421,7 @@ contract BoosterPool is
         uint160 sqrtPriceLimitX96,
         int24 tickLower,
         int24 tickUpper
-    ) external nonReentrant {
-        require(!isDeactivated, "deactivated"); 
-        require(msg.sender == strategy, "strategy");   
+    ) external nonReentrant onlyStrategy isActive{
         _checkRange(tickLower, tickUpper, tickSpacing);
 
         // Withdraw all current liquidity from Uniswap pool
@@ -572,8 +572,7 @@ contract BoosterPool is
     /**
      * @notice The method disables the protocol, only the withdrawal of funds by users remains available.
      */
-    function deactivateMode() external onlyGovernance {
-        require(!isDeactivated, "deactivated"); 
+    function deactivateMode() external onlyGovernance isActive{
         isDeactivated = true;
         (uint128 baseLiquidity, , , , ) = _position(baseLower, baseUpper);
         _burnAndCollect(baseLower, baseUpper, baseLiquidity);
@@ -663,6 +662,10 @@ contract BoosterPool is
             sqrtRatioBX96,
             1e18
         );
+        // If one of the assets is equal to zero, then our position is outside the price. 
+        // Therefore, it is not necessary to calculate the proportion of the deposit, we make a deposit in one asset. If the user contributes a second asset, then we change it completely
+        if(amount0 == 0 || amount1 == 0)
+            return (amount0, amount1);
 
         amount0 = FullMath.mulDiv(calc_amount0 * amount0,
                             amount1 * calc_amount1,
@@ -811,12 +814,7 @@ contract BoosterPool is
         uint256 liquidity = uint256(totalLiquidity) * shares / BPtotalSupply;
 
         if (liquidity > 0) {
-            (uint256 burned0, uint256 burned1, uint256 fees0, uint256 fees1) =
-                _burnAndCollect(tickLower, tickUpper, _toUint128(liquidity));
-
-            // Add share of fees
-            amount0 = burned0 + (fees0 * shares / BPtotalSupply);
-            amount1 = burned1 + (fees1 * shares / BPtotalSupply);
+            (amount0, amount1,,) = _burnAndCollect(tickLower, tickUpper, _toUint128(liquidity));
         }
     }
 
@@ -841,7 +839,11 @@ contract BoosterPool is
 
         (amount0, amount1) = _amountsForLiquidity(baseLower, baseUpper, liquidityUser);
         //adding one penny due to loss during conversion 
-        (amount0, amount1) = ((amount0 + 1), (amount1 + 1));
+        if(desiredAmount0 > 0)
+            amount0 = amount0 + 1;
+        if(desiredAmount1 > 0)
+            amount1 = amount1 + 1;
+
         if (BPtotalSupply == 0) {
             // For first deposit, just use the liquidity desired      
             shares = liquidityUser;
@@ -1025,6 +1027,16 @@ contract BoosterPool is
 
     modifier onlyAddressB {
         require(msg.sender == addressB, "addressB");
+        _;
+    }
+
+    modifier onlyStrategy {
+        require(msg.sender == strategy, "strategy");
+        _;
+    }
+
+    modifier isActive () {
+        require(!isDeactivated, "deactivated");
         _;
     }
 }
