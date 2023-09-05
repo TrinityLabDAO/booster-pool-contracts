@@ -71,7 +71,9 @@ contract BoosterPool is
         address indexed to,
         uint256 shares,
         uint256 amount0,
-        uint256 amount1
+        uint256 amount1,
+        uint256 balance,
+        uint256 totalsupply
     );
 
     /**
@@ -83,7 +85,9 @@ contract BoosterPool is
         address indexed to,
         uint256 shares,
         uint256 amount0,
-        uint256 amount1
+        uint256 amount1,
+        uint256 balance,
+        uint256 totalsupply
     );
 
     /**
@@ -94,6 +98,8 @@ contract BoosterPool is
      * @param feesToTreasuryA1 protocol 'A' commission from earned reward received in `token1`, will be stored in the 'Treasury A';
      * @param feesToTreasuryB0 protocol 'B' commission from earned reward received in `token0`, will be stored in the 'Treasury B';
      * @param feesToTreasuryB1 protocol 'B' commission from earned reward received in `token1`, will be stored in the 'Treasury B'.
+     * @param totalAmount0 TVL asset 0
+     * @param totalAmount1 TVL asset 1
      */
     event CollectFees(
         uint256 feesToPool0,
@@ -101,7 +107,9 @@ contract BoosterPool is
         uint256 feesToTreasuryA0,
         uint256 feesToTreasuryA1,
         uint256 feesToTreasuryB0,
-        uint256 feesToTreasuryB1
+        uint256 feesToTreasuryB1,
+        uint256 totalAmount0,
+        uint256 totalAmount1
     );
     
 
@@ -285,7 +293,7 @@ contract BoosterPool is
             token1.safeTransfer(msg.sender, refund1);
         // Mint shares to recipient.
         _mint(to, shares);
-        emit Deposit(msg.sender, to, shares, amount0, amount1);
+        emit Deposit(msg.sender, to, shares, amount0, amount1, balanceOf(address(this)), totalSupply());
         _reinvest(0, 0);
     }
 
@@ -327,7 +335,7 @@ contract BoosterPool is
 
         // Mint shares to recipient
         _mint(to, shares);
-        emit Deposit(msg.sender, to, shares, amount0, amount1);
+        emit Deposit(msg.sender, to, shares, amount0, amount1, balanceOf(address(this)), totalSupply());
         _reinvest(0, 0);
     }
 
@@ -387,7 +395,7 @@ contract BoosterPool is
         if (amount0 > 0) token0.safeTransfer(to, amount0);
         if (amount1 > 0) token1.safeTransfer(to, amount1);
 
-        emit Withdraw(msg.sender, to, shares, amount0, amount1);
+        emit Withdraw(msg.sender, to, shares, amount0, amount1, balanceOf(address(this)), totalSupply());
     }
 
     /**
@@ -441,14 +449,15 @@ contract BoosterPool is
      * @return amount1 computed value of token1
      */
     function getTotalAmounts(uint256 amountBP)
-        external
+        public
         returns(uint256 amount0, uint256 amount1)
     {
         uint256 BPtotalSupply = totalSupply();
         if(BPtotalSupply > 0){
             _poke(baseLower, baseUpper);
             (amount0,  amount1) = _getPositionAmounts();
-            (amount0,  amount1) = ((amount0 * amountBP / BPtotalSupply), (amount1 * amountBP / BPtotalSupply));
+            amount0 = (amount0 + getBalance0()) * amountBP / BPtotalSupply;
+            amount1 = (amount1 + getBalance1()) * amountBP / BPtotalSupply;
         } else {
             (amount0,  amount1) = (0,0);
         }
@@ -911,7 +920,10 @@ contract BoosterPool is
             feesToPool0 = feesToPool0 - feesToTreasuryA0 - feesToTreasuryB0;
             feesToPool1 = feesToPool1 - feesToTreasuryA1 - feesToTreasuryB1;
         }
-        emit CollectFees(feesToPool0, feesToPool1, feesToTreasuryA0, feesToTreasuryA1, feesToTreasuryB0, feesToTreasuryB1);
+
+        (uint256 totalAmount0, uint256 totalAmount1) = getTotalAmounts(totalSupply());
+
+        emit CollectFees(feesToPool0, feesToPool1, feesToTreasuryA0, feesToTreasuryA1, feesToTreasuryB0, feesToTreasuryB1, totalAmount0, totalAmount1);
     }
 
     /**
